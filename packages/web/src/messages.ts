@@ -4,4 +4,6 @@ export enum Message {
   VADMisfire = "VAD_MISFIRE",
   SpeechEnd = "SPEECH_END",
   SpeechStop = "SPEECH_STOP",
+  SpeechRealStart = "SPEECH_REAL_START",
+  FrameProcessed = "FRAME_PROCESSED",
 }

@@ -29,10 +29,14 @@ async function main() {
     })
     const myvad = await MicVAD.new({
       stream,
-      positiveSpeechThreshold: 0.8,
-      minSpeechFrames: 5,
-      preSpeechPadFrames: 10,
-      onFrameProcessed: (probs) => {
+      model: "v5",
+      baseAssetPath: "/",
+      onnxWASMBasePath: "/",
+      positiveSpeechThreshold: 0.4,
+      negativeSpeechThreshold: 0.4,
+      minSpeechFrames: 15,
+      preSpeechPadFrames: 30,
+      onFrameProcessed: (probs, frame) => {
         const indicatorColor = interpolateInferno(probs.isSpeech / 2)
         document.body.style.setProperty("--indicator-color", indicatorColor)
       },

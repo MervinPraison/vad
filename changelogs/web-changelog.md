@@ -1,5 +1,23 @@
 # @ricky0123/vad-web Changelog
 
+## 0.0.23
+
+* fix types in non-realtime vad
+* Use cdn package version "latest" by default for asset path
+* Reduce re-renders [#184](https://github.com/ricky0123/vad/pull/184)
+* add support to change VAD parameters dynamically [#137] https://github.com/ricky0123/vad/issues/173
+* add onRealSpeechStart callback - "not a misfire" event (https://github.com/ricky0123/vad/issues/67)
+
+## 0.0.22
+
+* add support for some mobile Safari browsers that do not support AudioWorkletNode [37?] https://github.com/ricky0123/vad/issues/37
+
+
+## 0.0.21
+
+* initial support for silero v5
+* baseAssetPath + onnxWASMBasePath method of specifying onnx/worklet/wasm files
+
 ## 0.0.19
 
 * options for AudioWorkletNode can be passed in to MicVAD constructor

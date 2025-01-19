@@ -9,9 +9,9 @@ This package aims to provide an accurate, user-friendly voice activity detector 
 
 * See a live [demo](https://www.vad.ricky0123.com)
 * Join us on [Discord](https://discord.gg/4WPeGEaSpF)!
-* Browse or contribute to [documentation](https://wiki.vad.ricky0123.com/)
-* If you would like to contribute, I have started writing some documentation on how to get started hacking on these packages [here](https://wiki.vad.ricky0123.com/en/docs/developer/hacking). If you have any questions, you can open an issue here or leave a message on Discord.
-* **NEW**: Please fill out this [survey](https://uaux2a2ppfv.typeform.com/to/iJG2gCQv) to let me know what you are building with these packages and how you are using them!
+* Browse the [documentation](https://docs.vad.ricky0123.com/), the source code of which is located in the ./docs directory
+* If you would like to contribute, I have started writing some documentation on how to get started hacking on these packages [here](https://docs.vad.ricky0123.com/developer-guide/hacking/). If you have any questions, you can open an issue here or leave a message on Discord.
+* Please fill out this [survey](https://uaux2a2ppfv.typeform.com/to/iJG2gCQv) to let me know what you are building with these packages and how you are using them!
 
 Under the hood, these packages run [Silero VAD](https://github.com/snakers4/silero-vad) [[1]](#1) using [ONNX Runtime Web](https://github.com/microsoft/onnxruntime/tree/main/js/web) / [ONNX Runtime Node.js](https://github.com/microsoft/onnxruntime/tree/main/js/node). Thanks a lot to those folks for making this possible.
 
@@ -28,15 +28,13 @@ I am going to wind down support for `ricky0123/vad-node`, the voice activity det
 - Sharing code between the browser and node packages is fairly awkward because the environments are different in ways that are relevant to running and using the voice activity detection model.
 - Most users, according to the [survey](https://uaux2a2ppfv.typeform.com/to/iJG2gCQv), are using `ricky0123/vad-web` (possibly with `ricky0123/vad-react`).
 
-I'm not going to mark `ricky0123/vad-node` as deprecated on npm just yet, but I don't plan to publish any updates.
-
 ## Quick Start
 
 To use the VAD via a script tag in the browser, include the following script tags:
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ort.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.19/dist/bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.22/dist/bundle.min.js"></script>
 <script>
   async function main() {
     const myvad = await vad.MicVAD.new({

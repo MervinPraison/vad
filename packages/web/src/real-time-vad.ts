@@ -1,15 +1,26 @@
 import * as ortInstance from "onnxruntime-web"
-import { assetPath } from "./asset-path"
 import { defaultModelFetcher } from "./default-model-fetcher"
 import {
   FrameProcessor,
+  FrameProcessorEvent,
   FrameProcessorOptions,
-  defaultFrameProcessorOptions,
+  defaultLegacyFrameProcessorOptions,
+  defaultV5FrameProcessorOptions,
   validateOptions,
 } from "./frame-processor"
 import { log } from "./logging"
 import { Message } from "./messages"
-import { OrtOptions, Silero, SpeechProbabilities } from "./models"
+import {
+  Model,
+  ModelFactory,
+  OrtOptions,
+  SileroLegacy,
+  SileroV5,
+  SpeechProbabilities,
+} from "./models"
+import { Resampler } from "./resampler"
+
+export const DEFAULT_MODEL = "legacy"
 
 interface RealTimeVADCallbacks {
   /** Callback to run after each frame. The size (number of samples) of a frame is given by `frameSamples`. */
@@ -32,6 +43,9 @@ interface RealTimeVADCallbacks {
    * This will not run if the audio segment is smaller than `minSpeechFrames`.
    */
   onSpeechEnd: (audio: Float32Array) => any
+
+  /** Callback to run when speech is detected as valid. (i.e. not a misfire) */
+  onSpeechRealStart: () => any
 }
 
 /**
@@ -44,17 +58,21 @@ type AudioConstraints = Omit<
 >
 
 type AssetOptions = {
-  workletURL: string
   workletOptions: AudioWorkletNodeOptions
-  modelURL: string
-  modelFetcher: (path: string) => Promise<ArrayBuffer>
+  baseAssetPath: string
+  onnxWASMBasePath: string
+}
+
+type ModelOptions = {
+  model: "v5" | "legacy"
 }
 
 interface RealTimeVADOptionsWithoutStream
   extends FrameProcessorOptions,
     RealTimeVADCallbacks,
     OrtOptions,
-    AssetOptions {
+    AssetOptions,
+    ModelOptions {
   additionalAudioConstraints?: AudioConstraints
   stream: undefined
 }
@@ -63,7 +81,8 @@ interface RealTimeVADOptionsWithStream
   extends FrameProcessorOptions,
     RealTimeVADCallbacks,
     OrtOptions,
-    AssetOptions {
+    AssetOptions,
+    ModelOptions {
   stream: MediaStream
 }
 
@@ -73,34 +92,47 @@ export type RealTimeVADOptions =
   | RealTimeVADOptionsWithStream
   | RealTimeVADOptionsWithoutStream
 
-export const defaultRealTimeVADOptions: RealTimeVADOptions = {
-  ...defaultFrameProcessorOptions,
-  onFrameProcessed: (probabilities) => {},
-  onVADMisfire: () => {
-    log.debug("VAD misfire")
-  },
-  onSpeechStart: () => {
-    log.debug("Detected speech start")
-  },
-  onSpeechEnd: () => {
-    log.debug("Detected speech end")
-  },
-  workletURL: assetPath("vad.worklet.bundle.min.js"),
-  modelURL: assetPath("silero_vad.onnx"),
-  modelFetcher: defaultModelFetcher,
-  stream: undefined,
-  ortConfig: undefined,
-  workletOptions: {
-    processorOptions: {
-      frameSamples: defaultFrameProcessorOptions.frameSamples,
+const workletFile = "vad.worklet.bundle.min.js"
+const sileroV5File = "silero_vad_v5.onnx"
+const sileroLegacyFile = "silero_vad_legacy.onnx"
+
+export const getDefaultRealTimeVADOptions: (
+  model: "v5" | "legacy"
+) => RealTimeVADOptions = (model) => {
+  const frameProcessorOptions =
+    model === "v5"
+      ? defaultV5FrameProcessorOptions
+      : defaultLegacyFrameProcessorOptions
+  return {
+    ...frameProcessorOptions,
+    onFrameProcessed: (probabilities, frame) => {},
+    onVADMisfire: () => {
+      log.debug("VAD misfire")
     },
-  },
+    onSpeechStart: () => {
+      log.debug("Detected speech start")
+    },
+    onSpeechEnd: () => {
+      log.debug("Detected speech end")
+    },
+    onSpeechRealStart: () => {
+      log.debug("Detected real speech start")
+    },
+    baseAssetPath:
+      "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@latest/dist/",
+    onnxWASMBasePath:
+      "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/",
+    stream: undefined,
+    ortConfig: undefined,
+    model: DEFAULT_MODEL,
+    workletOptions: {},
+  }
 }
 
 export class MicVAD {
   static async new(options: Partial<RealTimeVADOptions> = {}) {
     const fullOptions: RealTimeVADOptions = {
-      ...defaultRealTimeVADOptions,
+      ...getDefaultRealTimeVADOptions(options.model ?? DEFAULT_MODEL),
       ...options,
     }
     validateOptions(fullOptions)
@@ -165,50 +197,45 @@ export class MicVAD {
     this.audioNodeVAD.destroy()
     this.audioContext.close()
   }
+
+  setOptions = (options) => {
+    this.audioNodeVAD.setFrameProcessorOptions(options)
+  }
 }
 
 export class AudioNodeVAD {
+  private audioNode!: AudioWorkletNode | ScriptProcessorNode
+  private buffer?: Float32Array
+  private bufferIndex: number = 0
+  private frameProcessor: FrameProcessor
+  private gainNode?: GainNode
+  private resampler?: Resampler
+
   static async new(
     ctx: AudioContext,
     options: Partial<RealTimeVADOptions> = {}
   ) {
     const fullOptions: RealTimeVADOptions = {
-      ...defaultRealTimeVADOptions,
+      ...getDefaultRealTimeVADOptions(options.model ?? DEFAULT_MODEL),
       ...options,
-    }
+    } as RealTimeVADOptions
     validateOptions(fullOptions)
 
+    ort.env.wasm.wasmPaths = fullOptions.onnxWASMBasePath
     if (fullOptions.ortConfig !== undefined) {
       fullOptions.ortConfig(ort)
     }
 
+    const modelFile =
+      fullOptions.model === "v5" ? sileroV5File : sileroLegacyFile
+    const modelURL = fullOptions.baseAssetPath + modelFile
+    const modelFactory: ModelFactory =
+      fullOptions.model === "v5" ? SileroV5.new : SileroLegacy.new
+    let model: Model
     try {
-      await ctx.audioWorklet.addModule(fullOptions.workletURL)
+      model = await modelFactory(ort, () => defaultModelFetcher(modelURL))
     } catch (e) {
-      console.error(
-        `Encountered an error while loading worklet. Please make sure the worklet vad.bundle.min.js included with @ricky0123/vad-web is available at the specified path:
-        ${fullOptions.workletURL}
-        If need be, you can customize the worklet file location using the \`workletURL\` option.`
-      )
-      throw e
-    }
-    const vadNode = new AudioWorkletNode(
-      ctx,
-      "vad-helper-worklet",
-      fullOptions.workletOptions
-    )
-
-    let model: Silero
-    try {
-      model = await Silero.new(ort, () =>
-        fullOptions.modelFetcher(fullOptions.modelURL)
-      )
-    } catch (e) {
-      console.error(
-        `Encountered an error while loading model file. Please make sure silero_vad.onnx, included with @ricky0123/vad-web, is available at the specified path:
-      ${fullOptions.modelURL}
-      If need be, you can customize the model file location using the \`modelURL\` option.`
-      )
+      console.error(`Encountered an error while loading model file ${modelURL}`)
       throw e
     }
 
@@ -226,43 +253,112 @@ export class AudioNodeVAD {
       }
     )
 
-    const audioNodeVAD = new AudioNodeVAD(
-      ctx,
-      fullOptions,
-      frameProcessor,
-      vadNode
-    )
-
-    vadNode.port.onmessage = async (ev: MessageEvent) => {
-      switch (ev.data?.message) {
-        case Message.AudioFrame:
-          let buffer: ArrayBuffer = ev.data.data
-          if (!(buffer instanceof ArrayBuffer)) {
-            buffer = new ArrayBuffer(ev.data.data.byteLength)
-            new Uint8Array(buffer).set(new Uint8Array(ev.data.data))
-          }
-          const frame = new Float32Array(buffer)
-          await audioNodeVAD.processFrame(frame)
-          break
-
-        default:
-          break
-      }
-    }
-
+    const audioNodeVAD = new AudioNodeVAD(ctx, fullOptions, frameProcessor)
+    await audioNodeVAD.setupAudioNode()
     return audioNodeVAD
   }
 
   constructor(
     public ctx: AudioContext,
     public options: RealTimeVADOptions,
-    private frameProcessor: FrameProcessor,
-    private entryNode: AudioWorkletNode
-  ) {}
+    frameProcessor: FrameProcessor
+  ) {
+    this.frameProcessor = frameProcessor
+  }
+
+  private async setupAudioNode() {
+    const hasAudioWorklet =
+      "audioWorklet" in this.ctx && typeof AudioWorkletNode === "function"
+    if (hasAudioWorklet) {
+      try {
+        const workletURL = this.options.baseAssetPath + workletFile
+        await this.ctx.audioWorklet.addModule(workletURL)
+
+        const workletOptions = this.options.workletOptions ?? {}
+        workletOptions.processorOptions = {
+          ...(workletOptions.processorOptions ?? {}),
+          frameSamples: this.options.frameSamples,
+        }
+
+        this.audioNode = new AudioWorkletNode(
+          this.ctx,
+          "vad-helper-worklet",
+          workletOptions
+        )
+        ;(this.audioNode as AudioWorkletNode).port.onmessage = async (
+          ev: MessageEvent
+        ) => {
+          switch (ev.data?.message) {
+            case Message.AudioFrame:
+              let buffer: ArrayBuffer = ev.data.data
+              if (!(buffer instanceof ArrayBuffer)) {
+                buffer = new ArrayBuffer(ev.data.data.byteLength)
+                new Uint8Array(buffer).set(new Uint8Array(ev.data.data))
+              }
+              const frame = new Float32Array(buffer)
+              await this.processFrame(frame)
+              break
+          }
+        }
+
+        return
+      } catch (e) {
+        console.log(
+          "AudioWorklet setup failed, falling back to ScriptProcessor",
+          e
+        )
+      }
+    }
+
+    // Initialize resampler for ScriptProcessor
+    this.resampler = new Resampler({
+      nativeSampleRate: this.ctx.sampleRate,
+      targetSampleRate: 16000, // VAD models expect 16kHz
+      targetFrameSize: this.options.frameSamples ?? 480,
+    })
+
+    // Fallback to ScriptProcessor
+    const bufferSize = 4096 // Increased for more stable processing
+    this.audioNode = this.ctx.createScriptProcessor(bufferSize, 1, 1)
+
+    // Create a gain node with zero gain to handle the audio chain
+    this.gainNode = this.ctx.createGain()
+    this.gainNode.gain.value = 0
+
+    let processingAudio = false
+
+    ;(this.audioNode as ScriptProcessorNode).onaudioprocess = async (
+      e: AudioProcessingEvent
+    ) => {
+      if (processingAudio) return
+      processingAudio = true
+
+      try {
+        const input = e.inputBuffer.getChannelData(0)
+        const output = e.outputBuffer.getChannelData(0)
+        output.fill(0)
+
+        // Process through resampler
+        if (this.resampler) {
+          const frames = this.resampler.process(input)
+          for (const frame of frames) {
+            await this.processFrame(frame)
+          }
+        }
+      } catch (error) {
+        console.error("Error processing audio:", error)
+      } finally {
+        processingAudio = false
+      }
+    }
+
+    // Connect the audio chain
+    this.audioNode.connect(this.gainNode)
+    this.gainNode.connect(this.ctx.destination)
+  }
 
   pause = () => {
-    const ev = this.frameProcessor.pause()
-    this.handleFrameProcessorEvent(ev)
+    this.frameProcessor.pause(this.handleFrameProcessorEvent)
   }
 
   start = () => {
@@ -270,28 +366,25 @@ export class AudioNodeVAD {
   }
 
   receive = (node: AudioNode) => {
-    node.connect(this.entryNode)
+    node.connect(this.audioNode)
   }
 
   processFrame = async (frame: Float32Array) => {
-    const ev = await this.frameProcessor.process(frame)
-    this.handleFrameProcessorEvent(ev)
+    await this.frameProcessor.process(frame, this.handleFrameProcessorEvent)
   }
 
-  handleFrameProcessorEvent = (
-    ev: Partial<{
-      probs: SpeechProbabilities
-      msg: Message
-      audio: Float32Array
-      frame: Float32Array
-    }>
-  ) => {
-    if (ev.probs !== undefined) {
-      this.options.onFrameProcessed(ev.probs, ev.frame as Float32Array)
-    }
+  handleFrameProcessorEvent = (ev: FrameProcessorEvent) => {
     switch (ev.msg) {
+      case Message.FrameProcessed:
+        this.options.onFrameProcessed(ev.probs, ev.frame as Float32Array)
+        break
+
       case Message.SpeechStart:
         this.options.onSpeechStart()
+        break
+
+      case Message.SpeechRealStart:
+        this.options.onSpeechRealStart()
         break
 
       case Message.VADMisfire:
@@ -301,16 +394,23 @@ export class AudioNodeVAD {
       case Message.SpeechEnd:
         this.options.onSpeechEnd(ev.audio as Float32Array)
         break
-
-      default:
-        break
     }
   }
 
   destroy = () => {
-    this.entryNode.port.postMessage({
-      message: Message.SpeechStop,
-    })
-    this.entryNode.disconnect()
+    if (this.audioNode instanceof AudioWorkletNode) {
+      this.audioNode.port.postMessage({
+        message: Message.SpeechStop,
+      })
+    }
+    this.audioNode.disconnect()
+    this.gainNode?.disconnect()
+  }
+
+  setFrameProcessorOptions = (options) => {
+    this.frameProcessor.options = {
+      ...this.frameProcessor.options,
+      ...options,
+    }
   }
 }
